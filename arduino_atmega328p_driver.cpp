@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <util/delay.h>
+#include <string.h>
+#include <avr/eeprom.h>
 
 #pragma warning( push )
 #pragma warning( disable : 4100 )
@@ -51,54 +53,48 @@ typedef struct used_dpins
     enum pin_type RW_access;
 } _used_dpins;
 
+uint8_t DB = 0B0000000;
+uint8_t DC = 0B0000000;
+
+#define invert(byte)    byte & (~byte)
+
+/* "Add on" to the binary.
+ * Or-ing the binary with itself makes sure whatever values
+ * existed before still exist.
+ * */
+#define add_on(byte, new_byte)    byte | new_byte
+
+uint8_t set_bit(uint8_t k)
+{
+    return (DB | (1 << (k - 1)));
+}
+uint8_t clear_bit(uint8_t k)
+{
+    return (DB | (1 << (k - 1)));
+}
+
+/* TODO: Add support for PORTD (pins 2-7, PD0-PD7). */
 class ATMEGA328P
 {
 private:
     _used_apins apins_used[7];
-    uint8_t apins_used_size = 0;
-
     _used_dpins dpins_used[6];
-    uint8_t dpins_used_size = 0;
-
-    template<typename pt>
-    pt *get_pin(pt pin, enum pin_type RW_access, uint8_t type)
-    {
-        uint8_t i = 0;
-
-        if(type == 'd')
-        {
-            for(; dpins_used[i].dpin_used != pin; i++);
-
-            if(dpins_used[i].RW_access != RW_access) goto return_empty_slate;
-            return &dpins_used[i];
-        }
-
-        if(type == 'a')
-        {
-            for(; apins_used[i].apin_used != pin; i++);
-
-            if(apins_used[i].RW_access != RW_access) goto return_empty_slate;
-            return &apins_used[i];
-        }
-
-        return_empty_slate:
-        return 0;
-    }
 
 public:
 
     ATMEGA328P(enum ATMEGA328P_APINS used_apins[], enum ATMEGA328P_DPINS used_dpins[])
     {
         for(uint8_t i = 0; used_apins[i]; i++)
-            { apins_used[i].apin_used = used_apins[i]; apins_used_size++; }
+            apins_used[i].apin_used = used_apins[i];
         
         for(uint8_t i = 0; used_dpins[i]; i++)
-            { dpins_used[i].dpin_used = used_dpins[i]; dpins_used_size++; }
+            dpins_used[i].dpin_used = used_dpins[i];
     }
 
     template<typename pt>
     void set_write_access(pt ptype, uint8_t type)
     {
+        printf("Yes");
         uint8_t index = 0;
 
         if(type == 'a')
@@ -129,7 +125,7 @@ public:
         {
             for(; apins_used[index].apin_used != pin; index++);
 
-            apins_used[index].RW_access = PIN_WRITE;
+            apins_used[index].RW_access = PIN_READ;
             return;
         }
 
@@ -137,7 +133,7 @@ public:
         {
             for(; dpins_used[index].dpin_used != pin; index++);
 
-            dpins_used[index].RW_access = PIN_WRITE;
+            dpins_used[index].RW_access = PIN_READ;
             return;
         }
 
@@ -146,41 +142,35 @@ public:
 
     void init_driver()
     {
+        DDRB = add_on(DDRB, DB);
+        DDRC = invert(DDRC);
+
+        return;
+    }
+
+    template<typename pt>
+    void init_pin(pt pin, uint8_t type)
+    {
         uint8_t index = 0;
 
-        for(; index <= apins_used_size; index++)
+        if(type == 'a')
         {
+            for(; apins_used[index].apin_used != pin; index++);
+
             if(apins_used[index].RW_access == PIN_READ)
-                DDRC &= ~_BV(apins_used[index].apin_used);
-            if(apins_used[index].RW_access == PIN_WRITE)
-                DDRC |= _BV(apins_used[index].apin_used);
+                DC = set_bit(apins_used[index].apin_used);
+            else
+                DC = clear_bit(apins_used[index].apin_used);
         }
 
-        index = 0;
-        for(; index <= dpins_used_size; index++)
+        if(type == 'd')
         {
+            for(; dpins_used[index].dpin_used != pin; index++);
+
             if(dpins_used[index].RW_access == PIN_READ)
-                DDRB &= ~_BV(dpins_used[index].dpin_used);
-            if(dpins_used[index].RW_access == PIN_WRITE)
-                DDRB |= _BV(dpins_used[index].dpin_used);
-        }
-
-        //DDRB |= _BV(DDB0);
-        //DDRC &= ~_BV(DDC1);
-
-        for(;;)
-        {
-            int v = PINC & _BV(PC1);
-
-            if(v != 0)
-            {
-                PORTB |= _BV(PORTB0);
-            } else
-            {
-                PORTB &= ~_BV(PORTB0);
-            }
-
-            _delay_ms(BLINK_DELAY_MS);
+                DB = set_bit(dpins_used[index].dpin_used);
+            else
+                DB = clear_bit(dpins_used[index].dpin_used);
         }
 
         return;
@@ -204,29 +194,48 @@ public:
 
 int main(void)
 {
-    enum ATMEGA328P_APINS apins[] = {A1};
-    enum ATMEGA328P_DPINS dpins[] = {D8};
+    /* A1 - On high, the sensor sensed something. 
+     * A0 - Just a test to make sure `ATMEGA328P` can handle more than 1 pin.
+     * */
+    enum ATMEGA328P_APINS apins[] = {A1, A0};
+    enum ATMEGA328P_DPINS dpins[] = {D8, D9};
 
+    /* Init the ATMEGA328P Arduino Nano driver. */
     ATMEGA328P driver(apins, dpins);
 
+    /* Set access for each pin. */
     driver.set_read_access<enum ATMEGA328P_APINS> (A1, 'a');
+    driver.set_read_access<enum ATMEGA328P_APINS> (A0, 'a');
     driver.set_write_access<enum ATMEGA328P_DPINS> (D8, 'd');
+    driver.set_write_access<enum ATMEGA328P_DPINS> (D9, 'd');
 
+    /* Initialize each pin. */
+    driver.init_pin<enum ATMEGA328P_DPINS> (D8, 'd');
+    driver.init_pin<enum ATMEGA328P_DPINS> (D9, 'd');
+    driver.init_pin<enum ATMEGA328P_APINS> (A1, 'a');
+    driver.init_pin<enum ATMEGA328P_APINS> (A0, 'a');
+    
+    /* Initialize the driver so we can read/write to the according pins. */
     driver.init_driver();
-
-    //DDRB |= _BV(DDB0);
-    //DDRC &= ~_BV(DDC1);
 
     for(;;)
     {
-        int v = PINC & _BV(PC1);
-
-        if(v != 0)
+        /* See if the sensor sent a `HIGH` value to pin A1. */
+        if(driver.read_pin<enum ATMEGA328P_APINS> (A1, 'a') != 0)
         {
             PORTB |= _BV(PORTB0);
         } else
         {
             PORTB &= ~_BV(PORTB0);
+        }
+
+        /* See if the sensor sent a `HIGH` value to pin A0. */
+        if(driver.read_pin<enum ATMEGA328P_APINS> (A0, 'a') != 0)
+        {
+            PORTB |= _BV(PORTB1);
+        } else
+        {
+            PORTB &= ~_BV(PORTB1);
         }
 
         _delay_ms(BLINK_DELAY_MS);
